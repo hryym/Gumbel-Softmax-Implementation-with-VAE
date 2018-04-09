@@ -23,8 +23,8 @@ parser.add_argument('--anneal_rate', type = float, default = 0.00003,
                     help = 'anneal rate for temperature (default: 0.00003)')
 parser.add_argument('--min_temp', type = float, default = 0.5,
                     help = 'minimum temperature (default: 0.5)')
-parser.add_argument('--use_cuda', action = 'store_true', default = 'False',
-                    help = 'enables CUDA training (default = False)')
+parser.add_argument('--no_cuda', action='store_true', default=False,
+                    help='enables CUDA training')
 parser.add_argument('--log_interval', type = int, default = 5000,
                     help = 'how many iterations to wait before logging training status')
 parser.add_argument('--K', type = int, default = 10,
@@ -32,7 +32,7 @@ parser.add_argument('--K', type = int, default = 10,
 parser.add_argument('--N', type = int, default = 30,
                     help = 'number of categorical distributions')
 args = parser.parse_args()
-args.cuda = torch.cuda.is_available() and args.use_cuda
+args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 
 class CVAE(nn.Module):
@@ -122,25 +122,51 @@ def train(model, optimizer, train_loader, num_iters, dat, args):
             for param_group in optimizer.param_groups:
                 param_group['lr'] *= 0.9
             model.temperature = np_temp
-        print("loss", -loss.data[0])
-        ipdb.set_trace()
         if num_iters % args.log_interval == 1:
             print('Step %d, ELBO: %0.3f' % (num_iters,-loss.data[0]))
-
-
     return model, optimizer, num_iters, dat
 
-    def test(model, test_loader):
-        model.eval()
-        test_loss = 0
-        for i, (data, _) in enumerate(test_loader):
-            if args.cuda:
-                data = data.cuda()
-            data = Variable(data, volatile=True)
-            #p_x, q_y, logits = model(data)
-            #test_loss += loss_fn(q_y, p_x, data, N, K).data[0]
+def test(model, test_loader):
+    model.eval()
+    test_loss = 0
+    for i, (data, _) in enumerate(test_loader):
+        if args.cuda:
+            data = data.cuda()
+        data = Variable(data, volatile=True)
+        #p_x, q_y, logits = model(data)
+        #test_loss += loss_fn(q_y, p_x, data, N, K).data[0]
+
+def img_gen(model, args):
+    model.eval()
+    M = 100 * args.N
+    np_y = np.zeros((M, args.K))
+    np_y[range(M), np.random.choice(args.K,M)] = 1
+    y = Variable(torch.from_numpy(np.reshape(np_y, [100, args.N*args.K])).type(torch.FloatTensor))
+    if args.cuda:
+        y = y.cuda()
 
 
+    p_x, logits_x = model._decoder(y)
+
+    np_y = np_y.reshape((10, 10, args.N, args.K))
+    np_y = np.concatenate(np.split(np_y,10,axis=0),axis=3)
+    np_y = np.concatenate(np.split(np_y,10,axis=1),axis=2)
+    y_img = np.squeeze(np_y)
+
+    x_p = p_x.view(10, 10, 28, 28).cpu().data.numpy()
+    x_p = np.concatenate(np.split(x_p, 10, axis=0), axis=3)
+    x_p = np.concatenate(np.split(x_p, 10, axis=1), axis=2)
+    x_img = np.squeeze(x_p)
+    f,axarr=plt.subplots(1, 2, figsize=(15,15))
+    # samples
+    axarr[0].matshow(y_img, cmap=plt.cm.gray)
+    axarr[0].set_title('Z Samples')
+    # reconstruction
+    axarr[1].imshow(x_img, cmap=plt.cm.gray, interpolation='none')
+    axarr[1].set_title('Generated Images')
+
+    f.tight_layout()
+    f.savefig('code_torch.png')
 
 def main(args):
     torch.manual_seed(100)
@@ -163,10 +189,12 @@ def main(args):
     if args.cuda:
         model.cuda()
     optimizer = optim.Adam(model.parameters(), lr = args.lr)
+
     while num_iters <= args.num_iters:
         model, optimizer, num_iters, dat = train(model,
             optimizer, train_loader, num_iters, dat, args)
-        #test(model, test_loader)
+    #test(model, test_loader)
+    img_gen(model, args)
     dat=np.array(dat).T
     f,axarr=plt.subplots(1,2)
     axarr[0].plot(dat[0],dat[1])
@@ -174,6 +202,8 @@ def main(args):
     axarr[1].plot(dat[0],dat[2])
     axarr[1].set_ylabel('-ELBO')
     plt.show()
+
+
 
 if __name__ == '__main__':
     with ipdb.slaunch_ipdb_on_exception():
